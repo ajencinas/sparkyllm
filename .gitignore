@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+sparky/
+.venv/
+venv/
+
+# IDE
+.vscode/
+*.code-workspace
+.claude/
+
+# Data files (too large for git — stored on Google Drive)
+*.bin
+*.pth
+*.zip
+*.txt
+!README.md
+data_processing/gutemberg/
+data_processing/gutemberg_clean/
+pretrain/c4_samples.txt
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Old/archived versions
+pretrain/OLD/
