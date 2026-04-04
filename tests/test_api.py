@@ -122,3 +122,24 @@ async def test_response_has_device_field(async_client):
     data = resp.json()
     assert "device" in data
     assert data["device"] in ("cuda", "cpu")
+
+
+# --- Streaming endpoint ---
+
+@pytest.mark.anyio
+async def test_generate_stream(async_client):
+    resp = await async_client.post("/generate/stream", json={
+        "prompt": "The knight",
+        "max_tokens": 10,
+        "temperature": 0.8,
+    })
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+
+    # Parse SSE events
+    import json
+    lines = resp.text.strip().split("\n")
+    events = [json.loads(l.removeprefix("data: ")) for l in lines if l.startswith("data: ")]
+    assert len(events) >= 2  # at least prompt + done
+    assert "token" in events[0]  # first event is the prompt
+    assert events[-1].get("done") is True  # last event signals completion

@@ -117,6 +117,18 @@ def load_tokenizer() -> Tokenizer:
 
 
 @torch.no_grad()
+def _apply_repetition_penalty(logits, token_ids, penalty):
+    """Penalize tokens that already appeared. penalty=1.0 means no effect."""
+    if penalty == 1.0 or len(token_ids) == 0:
+        return logits
+    seen = torch.tensor(list(set(token_ids)), dtype=torch.long, device=logits.device)
+    scores = logits[:, seen]
+    # Divide positive logits, multiply negative logits (standard HF approach)
+    scores = torch.where(scores > 0, scores / penalty, scores * penalty)
+    logits[:, seen] = scores
+    return logits
+
+
 def generate(
     model: SimpleGPT,
     tokenizer: Tokenizer,
@@ -125,6 +137,7 @@ def generate(
     temperature: float = 0.8,
     top_k: int = 40,
     top_p: float = 0.9,
+    repetition_penalty: float = 1.0,
     device: torch.device | None = None,
 ) -> str:
     """Generate text continuation from a prompt."""
@@ -138,6 +151,7 @@ def generate(
     for _ in range(max_tokens):
         context = tokens[:, -BLOCK_SIZE:]
         logits = model(context)[:, -1, :]
+        logits = _apply_repetition_penalty(logits, tokens[0].tolist(), repetition_penalty)
         logits = logits / temperature
 
         if top_k > 0:
@@ -160,3 +174,53 @@ def generate(
         tokens = torch.cat([tokens, next_token], dim=1)
 
     return tokenizer.decode(tokens[0].tolist())
+
+
+@torch.no_grad()
+def generate_stream(
+    model: SimpleGPT,
+    tokenizer: Tokenizer,
+    prompt: str,
+    max_tokens: int = 200,
+    temperature: float = 0.8,
+    top_k: int = 40,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.0,
+    device: torch.device | None = None,
+):
+    """Yield token strings one at a time as they're generated."""
+    if device is None:
+        device = next(model.parameters()).device
+
+    eot_id = tokenizer.token_to_id("<|endoftext|>")
+    ids = tokenizer.encode(prompt).ids
+    tokens = torch.tensor([ids], dtype=torch.long, device=device)
+
+    # Yield the prompt first
+    yield tokenizer.decode(ids)
+
+    for _ in range(max_tokens):
+        context = tokens[:, -BLOCK_SIZE:]
+        logits = model(context)[:, -1, :]
+        logits = _apply_repetition_penalty(logits, tokens[0].tolist(), repetition_penalty)
+        logits = logits / temperature
+
+        if top_k > 0:
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = float('-inf')
+
+        if top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+            mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) >= top_p
+            sorted_logits[mask] = float('-inf')
+            logits = torch.zeros_like(logits).scatter(1, sorted_indices, sorted_logits)
+
+        probs = F.softmax(logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+
+        if next_token.item() == eot_id:
+            break
+
+        tokens = torch.cat([tokens, next_token], dim=1)
+        yield tokenizer.decode([next_token.item()])

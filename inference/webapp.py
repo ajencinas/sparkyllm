@@ -21,15 +21,19 @@ temperature = st.sidebar.slider("Temperature", 0.1, 2.0, 0.8, step=0.05)
 top_k = st.sidebar.slider("Top-K", 0, 200, 40)
 top_p = st.sidebar.slider("Top-P", 0.1, 1.0, 0.9, step=0.05)
 
+# --- Headers (ngrok free tier requires this to bypass interstitial page) ---
+HEADERS = {"ngrok-skip-browser-warning": "true"}
+
 # --- Health check ---
 health_ok = False
 try:
-    health = requests.get(f"{api_url}/health", timeout=5).json()
+    health = requests.get(f"{api_url}/health", headers=HEADERS, timeout=5).json()
     health_ok = health.get("status") == "ok" and health.get("model_loaded")
     gpu_name = health.get("gpu", "CPU")
     st.sidebar.success(f"Connected — {gpu_name}")
-except Exception:
+except Exception as e:
     st.sidebar.error(f"Cannot reach API at {api_url}")
+    st.sidebar.caption(f"Error: {e}")
 
 # --- Main area ---
 st.title("⚡ SparkLLM")
@@ -51,6 +55,7 @@ if generate_clicked and prompt.strip():
         try:
             resp = requests.post(
                 f"{api_url}/generate",
+                headers=HEADERS,
                 json={
                     "prompt": prompt.strip(),
                     "max_tokens": max_tokens,
