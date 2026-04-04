@@ -21,12 +21,13 @@ venv/
 *.zip
 *.txt
 !README.md
-data_processing/gutemberg/
-data_processing/gutemberg_clean/
-pretrain/c4_samples.txt
+data_processing/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Secrets
+.env
 
 # OS
 .DS_Store
