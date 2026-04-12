@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+sparky/
+.venv/
+venv/
+
+# IDE
+.vscode/
+*.code-workspace
+.claude/
+
+# Data files (too large for git — stored on Google Drive)
+*.bin
+*.pth
+*.zip
+*.txt
+!README.md
+!requirements.txt
+!**/requirements.txt
+data_processing/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Old/archived versions
+pretrain/OLD/
+
+# Local inference / agent weights — never commit checkpoints or tokenizers
+local_test/weights/
+local_agent/weights/
