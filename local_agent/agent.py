@@ -35,45 +35,11 @@ from sparky_model import BLOCK_SIZE, SimpleGPT, stream_generate  # type: ignore
 from tools import TOOLS, tool_descriptions
 
 
-SYSTEM_PROMPT = """You are an assistant that can use tools to answer questions. You can use these tools:
-{tools}
-
-Format your work like this:
-Question: <user question>
-Thought: <your reasoning>
-Action: <tool name>
-Input: <input for the tool>
-Result: <tool output, filled in for you>
-Final: <your final answer in plain English>
-
-You may use multiple Thought/Action/Input/Result steps if needed. When you have the answer, write Final: followed by the answer.
-
-Example 1:
-Question: What is 15 percent of 240?
-Thought: I need to compute a percentage.
-Action: calculator
-Input: 0.15 * 240
-Result: 36
-Final: 15 percent of 240 is 36.
-
-Example 2:
-Question: Hi, how are you?
-Thought: This is a greeting. No tool needed.
-Action: none
-Input:
-Result:
-Final: I'm doing well, thanks for asking. How can I help you?
-
-Example 3:
-Question: Who wrote the play Hamlet?
-Thought: I need to look this up.
-Action: web_search
-Input: Hamlet play author
-Result: Hamlet is a tragedy written by William Shakespeare sometime between 1599 and 1601.
-Final: Hamlet was written by William Shakespeare.
-
-Now answer this:
-Question: {question}
+# Minimal prompt: matches the exact format the model was SFT-trained on
+# (`Question: <q>\nThought:`). Few-shot examples and system preamble were
+# removed because they're out-of-distribution for the trained model —
+# at 650M params it tended to echo the examples instead of answering.
+SYSTEM_PROMPT = """Question: {question}
 Thought:"""
 
 
@@ -230,7 +196,6 @@ class AgentRunner:
 
     def run_turn(self, user_input: str) -> AgentResult:
         prompt = SYSTEM_PROMPT.format(
-            tools=tool_descriptions(),
             question=user_input.strip(),
         )
         # The prompt ends with "Thought:" — model continues from here.
