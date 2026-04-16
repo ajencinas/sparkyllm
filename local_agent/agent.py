@@ -44,7 +44,9 @@ Thought:"""
 
 
 # Stop the model as soon as it would emit a Result line — we'll inject the real one.
-STOP_STRINGS = ["\nResult:"]
+# Also stop at \nFinal: so a hallucinated final answer can't appear in the same
+# generation as an Action/Input pair (would otherwise skip tool execution).
+STOP_STRINGS = ["\nResult:", "\nFinal:"]
 
 
 @dataclass
@@ -209,20 +211,22 @@ class AgentRunner:
 
             step_content = buffer[step_marker:]
 
-            # Did the model emit a final answer?
-            final = _extract_final(step_content)
-            if final is not None:
-                return AgentResult(
-                    final_answer=final,
-                    steps=steps,
-                    raw_trace=buffer[len(prompt):],
-                )
-
+            # Parse action first. If the model emitted Action + Input, we run
+            # the tool — even if a `Final:` also appears in the same step.
+            # Treating `Final:` as authoritative when an action is present lets
+            # the model skip tool execution by hallucinating a final answer.
             thought, action, action_input = _parse_step(step_content)
 
-            # If the model emitted neither Action nor Final, treat the whole
-            # generation as a direct answer (graceful fallback).
             if not action:
+                # No Action. Accept a Final if present, otherwise fall back to
+                # the raw generation as a direct answer.
+                final = _extract_final(step_content)
+                if final is not None:
+                    return AgentResult(
+                        final_answer=final,
+                        steps=steps,
+                        raw_trace=buffer[len(prompt):],
+                    )
                 return AgentResult(
                     final_answer=step_content.strip() or "(no answer)",
                     steps=steps,
