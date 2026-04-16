@@ -109,7 +109,10 @@ def _parse_step(content: str) -> Tuple[str, str, str]:
         action_input = ""
     else:
         action = after_action[:i_idx].strip().split("\n")[0]
-        action_input = after_action[i_idx + i_kw_len:].strip()
+        # Input is single-line: stop at the first newline. This prevents a
+        # runaway model (e.g. `Input: 12*2\nInput: 6256\nFinal:`) from
+        # feeding multi-line garbage into the tool.
+        action_input = after_action[i_idx + i_kw_len:].split("\n")[0].strip()
 
     # Lenient: model wrote `Action: calculator(2+2)` style
     if "(" in action and ")" in action:
@@ -216,24 +219,34 @@ class AgentRunner:
             # Treating `Final:` as authoritative when an action is present lets
             # the model skip tool execution by hallucinating a final answer.
             thought, action, action_input = _parse_step(step_content)
+            action_clean = _normalise_action(action) if action else ""
 
-            if not action:
-                # No Action. Accept a Final if present, otherwise fall back to
-                # the raw generation as a direct answer.
+            # Finalization signal: either no action, action=="none" (sentinel
+            # for "answer directly"), or the model emitted `Final:` in-band.
+            # Our stop string halts AT `\nFinal:` so there's usually no answer
+            # text yet — generate it now.
+            finalizing = (
+                action_clean in ("", "none", "null") or
+                "\nfinal:" in step_content.lower()
+            )
+            if finalizing and action_clean in ("", "none", "null"):
                 final = _extract_final(step_content)
-                if final is not None:
-                    return AgentResult(
-                        final_answer=final,
-                        steps=steps,
-                        raw_trace=buffer[len(prompt):],
+                if final is None:
+                    if not buffer.rstrip().endswith("Final:"):
+                        buffer += "\nFinal:"
+                    forced = self._generate(buffer, max_new_tokens=150, stop=None)
+                    buffer += forced
+                    final = (
+                        _extract_final(buffer[len(prompt):])
+                        or forced.strip()
+                        or step_content.strip()
+                        or "(no answer)"
                     )
                 return AgentResult(
-                    final_answer=step_content.strip() or "(no answer)",
+                    final_answer=final,
                     steps=steps,
                     raw_trace=buffer[len(prompt):],
                 )
-
-            action_clean = _normalise_action(action)
 
             if action_clean not in TOOLS:
                 err = f"unknown tool '{action}'. Available: {', '.join(TOOLS)}"
