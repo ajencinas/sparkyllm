@@ -273,14 +273,6 @@ class AgentRunner:
                     raw_trace=buffer[len(prompt):],
                 )
 
-            # Canonicalize: strip junk (extra Input lines, premature
-            # Final:) so subsequent steps see a clean context.
-            canonical_step = (
-                f" {thought}\nAction: {action_clean or action}\n"
-                f"Input: {action_input}"
-            )
-            buffer = buffer[:step_marker] + canonical_step
-
             if action_clean not in TOOLS:
                 err = f"unknown tool '{action}'. Available: {', '.join(TOOLS)}"
                 steps.append(AgentStep(
