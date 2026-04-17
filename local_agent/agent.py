@@ -16,6 +16,7 @@ real Result, and re-prompts. Loop until Final or max_steps.
 """
 from __future__ import annotations
 
+import ast
 import os
 import sys
 from dataclasses import dataclass, field
@@ -109,10 +110,8 @@ def _parse_step(content: str) -> Tuple[str, str, str]:
         action_input = ""
     else:
         action = after_action[:i_idx].strip().split("\n")[0]
-        # Input is single-line: stop at the first newline. This prevents a
-        # runaway model (e.g. `Input: 12*2\nInput: 6256\nFinal:`) from
-        # feeding multi-line garbage into the tool.
-        action_input = after_action[i_idx + i_kw_len:].split("\n")[0].strip()
+        after_input = after_action[i_idx + i_kw_len:]
+        action_input = after_input.split("\n")[0].strip()
 
     # Lenient: model wrote `Action: calculator(2+2)` style
     if "(" in action and ")" in action:
@@ -124,7 +123,33 @@ def _parse_step(content: str) -> Tuple[str, str, str]:
                 action_input = inner
             action = action[:po].strip()
 
+    # Fallback: if the first Input line isn't a valid expression for
+    # calculator, try subsequent Input: lines the model may have emitted.
+    if i_idx != -1 and action.lower().strip().rstrip(":,. ").split("(")[0] == "calculator":
+        if not _is_valid_calc_expr(action_input):
+            for line in after_input.split("\n")[1:]:
+                ll = line.lower().strip()
+                if ll.startswith("input:"):
+                    candidate = line[line.lower().index("input:") + 6:].strip()
+                    if _is_valid_calc_expr(candidate):
+                        action_input = candidate
+                        break
+
     return thought, action, action_input
+
+
+def _is_valid_calc_expr(expr: str) -> bool:
+    """True if expr is a valid Python arithmetic expression (no names)."""
+    if not expr:
+        return False
+    try:
+        tree = ast.parse(expr.strip(), mode="eval")
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            return False
+    return True
 
 
 def _extract_final(content: str) -> Optional[str]:
@@ -247,6 +272,14 @@ class AgentRunner:
                     steps=steps,
                     raw_trace=buffer[len(prompt):],
                 )
+
+            # Canonicalize: strip junk (extra Input lines, premature
+            # Final:) so subsequent steps see a clean context.
+            canonical_step = (
+                f" {thought}\nAction: {action_clean or action}\n"
+                f"Input: {action_input}"
+            )
+            buffer = buffer[:step_marker] + canonical_step
 
             if action_clean not in TOOLS:
                 err = f"unknown tool '{action}'. Available: {', '.join(TOOLS)}"
