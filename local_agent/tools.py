@@ -6,12 +6,45 @@ a string. Add a new tool by writing the function and adding it to TOOLS.
 from __future__ import annotations
 
 import ast
+import html
 import json
 import operator
+import os
 import urllib.parse
 import urllib.request
 from datetime import datetime
 from typing import Callable, Dict
+
+
+# ---- Lightweight .env loader ----
+# Reads BRAVE_API_KEY (and any other KEY=value lines) from a .env file in
+# the project root if it exists. Silently skips if the file isn't there.
+# Colab users don't need .env — they set os.environ from userdata instead.
+
+def _load_dotenv() -> None:
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, ".env"),                           # local_agent/.env
+        os.path.join(here, "..", ".env"),                     # repo root/.env
+    ]
+    for path in candidates:
+        path = os.path.normpath(path)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
+
+_load_dotenv()
 
 
 # ---- Safe arithmetic evaluator ----
@@ -93,8 +126,11 @@ _USER_AGENT = "sparkyllm-local-agent/0.1 (https://github.com/ajencinas/sparkyllm
 _HTTP_TIMEOUT = 6  # seconds
 
 
-def _http_get_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+def _http_get_json(url: str, headers: Dict[str, str] = None) -> dict:
+    merged = {"User-Agent": _USER_AGENT}
+    if headers:
+        merged.update(headers)
+    req = urllib.request.Request(url, headers=merged)
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
@@ -106,23 +142,39 @@ def _truncate(text: str, n: int = 400) -> str:
     return text[: n - 3].rstrip() + "..."
 
 
-def _ddg_instant_answer(query: str) -> str:
-    """Try DuckDuckGo's Instant Answer API. Returns text or empty string."""
-    url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
-        "q": query, "format": "json", "no_html": "1", "skip_disambig": "1",
+def _clean_snippet(text: str) -> str:
+    """Unescape HTML entities and strip tag markers from a search snippet."""
+    if not text:
+        return ""
+    # Brave sometimes returns <strong>...</strong> around query matches
+    text = text.replace("<strong>", "").replace("</strong>", "")
+    text = text.replace("<b>", "").replace("</b>", "")
+    return html.unescape(text)
+
+
+def _brave_search(query: str) -> str:
+    """Brave Search API — requires BRAVE_API_KEY. Returns snippet or empty."""
+    key = os.environ.get("BRAVE_API_KEY", "").strip()
+    if not key:
+        return ""
+    url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode({
+        "q": query, "count": "3",
+        "search_lang": "en", "country": "us",  # prefer English results
     })
     try:
-        data = _http_get_json(url)
+        data = _http_get_json(url, headers={
+            "X-Subscription-Token": key,
+            "Accept": "application/json",
+        })
     except Exception:
         return ""
-    for key in ("AbstractText", "Answer", "Definition"):
-        val = data.get(key)
-        if val:
-            return str(val)
-    for topic in data.get("RelatedTopics", []) or []:
-        if isinstance(topic, dict) and topic.get("Text"):
-            return str(topic["Text"])
-    return ""
+    results = (data.get("web", {}) or {}).get("results", []) or []
+    if not results:
+        return ""
+    top = results[0]
+    # Prefer description (2-3 sentence factual snippet); fall back to title
+    text = _clean_snippet(top.get("description") or top.get("title") or "")
+    return text
 
 
 def _wikipedia_summary(query: str) -> str:
@@ -143,8 +195,28 @@ def _wikipedia_summary(query: str) -> str:
     return summary.get("extract", "") or ""
 
 
+def _ddg_instant_answer_strict(query: str) -> str:
+    """DuckDuckGo Instant Answer — authoritative fields only.
+
+    Drops RelatedTopics because it surfaces noisy regional associations
+    (e.g. "Encinasola, Huelva" → Jamón). Use as last-resort fallback only.
+    """
+    url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+        "q": query, "format": "json", "no_html": "1", "skip_disambig": "1",
+    })
+    try:
+        data = _http_get_json(url)
+    except Exception:
+        return ""
+    for key in ("AbstractText", "Answer", "Definition"):
+        val = data.get(key)
+        if val:
+            return str(val)
+    return ""
+
+
 def web_search(query: str) -> str:
-    """Search the web (DuckDuckGo Instant Answer, then Wikipedia)."""
+    """Search the web. Order: Brave (if keyed) → Wikipedia → strict DDG."""
     q = (query or "").strip()
     # Strip a leading "web_search(" / trailing ")" if the model wrote it that way
     if q.lower().startswith("web_search(") and q.endswith(")"):
@@ -152,16 +224,21 @@ def web_search(query: str) -> str:
     if not q:
         return "ERROR: empty query"
 
-    # 1) DuckDuckGo Instant Answer
-    text = _ddg_instant_answer(q)
+    # 1) Brave (only if API key is configured — real web relevance)
+    text = _brave_search(q)
     if text:
         return _truncate(text)
 
-    # 2) Wikipedia fallback
+    # 2) Wikipedia — reliable for people, places, concepts
     try:
         text = _wikipedia_summary(q)
-    except Exception as e:
-        return f"ERROR: {e}"
+    except Exception:
+        text = ""
+    if text:
+        return _truncate(text)
+
+    # 3) DuckDuckGo Instant Answer — authoritative fields only
+    text = _ddg_instant_answer_strict(q)
     if text:
         return _truncate(text)
 
