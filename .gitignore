@@ -41,3 +41,6 @@ pretrain/OLD/
 # Local inference / agent weights — never commit checkpoints or tokenizers
 local_test/weights/
 local_agent/weights/
+
+# AI coding tool state
+.aider*
